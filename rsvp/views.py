@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 
-from .models import Guest, Party
+from .models import Guest, Meal, Party
 
 MAX_RESULTS = 8
 
@@ -18,7 +18,8 @@ def _guest_payload(guest):
         "first_name": guest.first_name,
         "last_name": guest.last_name,
         "attendance": guest.attendance,
-        "meal_choice": guest.meal_choice,
+        "meal_choice": guest.meal_choice.name if guest.meal_choice_id else "",
+        "notes": guest.notes,
     }
 
 
@@ -37,7 +38,7 @@ def search_guests(request):
         return JsonResponse({"parties": []})
 
     tokens = query.split()
-    guests = list(Guest.objects.select_related("party").all())
+    guests = list(Guest.objects.select_related("party", "meal_choice").all())
 
     matches = [g for g in guests if any(t in g.full_name().lower() for t in tokens)]
 
@@ -53,6 +54,12 @@ def search_guests(request):
 
     payload = [_party_payload(p["party"], p["guests"]) for p in list(parties.values())[:MAX_RESULTS]]
     return JsonResponse({"parties": payload})
+
+
+@require_GET
+def list_meals(request):
+    meals = Meal.objects.filter(is_active=True)
+    return JsonResponse({"meals": [m.name for m in meals]})
 
 
 @csrf_exempt
@@ -72,18 +79,18 @@ def submit_rsvp(request):
     if not guests:
         return JsonResponse({"error": "no matching guests for this party"}, status=400)
 
+    now = timezone.now()
     for guest in guests:
         info = guest_updates[guest.id]
         if info.get("attending"):
             guest.attendance = Guest.Attendance.ATTENDING
-            guest.meal_choice = str(info.get("meal_choice", ""))[:20]
+            meal_name = str(info.get("meal_choice", "")).strip()
+            guest.meal_choice = Meal.objects.filter(name__iexact=meal_name).first() if meal_name else None
         else:
             guest.attendance = Guest.Attendance.DECLINED
-            guest.meal_choice = ""
+            guest.meal_choice = None
+        guest.notes = str(info.get("notes", ""))[:500]
+        guest.responded_at = now
         guest.save()
-
-    party.notes = str(data.get("notes", ""))[:1000]
-    party.responded_at = timezone.now()
-    party.save()
 
     return JsonResponse({"status": "ok"})
